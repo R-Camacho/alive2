@@ -1406,21 +1406,23 @@ expr Memory::hasStored(const Pointer &p, const expr &bytes) const {
   expr bid = p.getShortBid();
   expr offset = p.getShortOffset();
   uint64_t bytes_i;
-  if (bytes.isUInt(bytes_i) && (bytes_i / bytes_per_byte) <= 8) {
-    expr ret = true;
-    for (uint64_t off = 0; off < (bytes_i / bytes_per_byte); ++off) {
-      expr off_expr = expr::mkUInt(off, offset);
-      ret &= has_stored_arg.load(bid.concat(offset + off_expr));
+  if (bytes.isUInt(bytes_i)) {
+    const uint64_t n = bytes_i / bytes_per_byte;
+    if (n <= 8) {
+      expr ret = true;
+      for (uint64_t off = 0; off < n; ++off) {
+        expr off_expr = expr::mkUInt(off, offset);
+        ret &= has_stored_arg.load(bid.concat(offset + off_expr));
+      }
+      return ret;
     }
-    return ret;
-  } else {
-    expr var = expr::mkFreshVar("#off", offset);
-    state->addQuantVar(var);
-    expr bytes_div = bytes.zextOrTrunc(offset.bits())
-                          .udiv(expr::mkUInt(bytes_per_byte, offset));
-    return (var.uge(offset) && var.ult(offset + bytes_div))
-             .implies(has_stored_arg.load(bid.concat(var)));
   }
+  expr var = expr::mkFreshVar("#off", offset);
+  state->addQuantVar(var);
+  expr bytes_div = bytes.zextOrTrunc(offset.bits())
+                        .udiv(expr::mkUInt(bytes_per_byte, offset));
+  return (var.uge(offset) && var.ult(offset + bytes_div))
+           .implies(has_stored_arg.load(bid.concat(var)));
 }
 
 void Memory::record_store(const Pointer &p, const expr &bytes) {
@@ -1434,30 +1436,34 @@ void Memory::record_store(const Pointer &p, const expr &bytes) {
   expr bid = p.getShortBid();
   expr offset = p.getShortOffset();
   uint64_t bytes_i;
-  if (bytes.isUInt(bytes_i) && (bytes_i / bytes_per_byte) <= 8) {
-    for (uint64_t off = 0; off < (bytes_i / bytes_per_byte); ++off) {
-      expr off_expr = expr::mkUInt(off, offset);
-      has_stored_arg
-        = expr::mkIf(is_local,
-                     has_stored_arg,
-                     has_stored_arg.store(bid.concat(offset + off_expr), true));
+  if (bytes.isUInt(bytes_i)) {
+    const uint64_t n = bytes_i / bytes_per_byte;
+    if (n <= 8) {
+      for (uint64_t off = 0; off < n; ++off) {
+        expr off_expr = expr::mkUInt(off, offset);
+        has_stored_arg
+          = expr::mkIf(is_local,
+                       has_stored_arg,
+                       has_stored_arg.store(bid.concat(offset + off_expr), true));
+      }
+      return;
     }
-  } else {
-    expr var     = expr::mkQVar(0, bid.concat(offset));
-    expr var_bid = var.extract(var.bits()-1, offset.bits());
-    expr var_off = var.trunc(offset.bits());
-
-    expr bytes_div = bytes.zextOrTrunc(offset.bits())
-                          .udiv(expr::mkUInt(bytes_per_byte, offset));
-    has_stored_arg
-      = expr::mkIf(is_local,
-                   has_stored_arg,
-                   expr::mkLambda(var, "#bid_off",
-                     (bid == var_bid &&
-                      var_off.uge(offset) &&
-                      var_off.ult(offset + bytes_div)) ||
-                     has_stored_arg.load(var)));
   }
+
+  expr var     = expr::mkQVar(0, bid.concat(offset));
+  expr var_bid = var.extract(var.bits()-1, offset.bits());
+  expr var_off = var.trunc(offset.bits());
+
+  expr bytes_div = bytes.zextOrTrunc(offset.bits())
+                        .udiv(expr::mkUInt(bytes_per_byte, offset));
+  has_stored_arg
+    = expr::mkIf(is_local,
+                 has_stored_arg,
+                 expr::mkLambda(var, "#bid_off",
+                   (bid == var_bid &&
+                    var_off.uge(offset) &&
+                    var_off.ult(offset + bytes_div)) ||
+                   has_stored_arg.load(var)));
 }
 
 static bool memory_unused() {
@@ -2750,19 +2756,21 @@ expr Memory::blockValRefined(const Pointer &src, const Memory &tgt,
   expr ptr_offset = src.getShortOffset();
   uint64_t bytes;
   if (full_check &&
-      src.blockSize().isUInt(bytes) && (bytes / bytes_per_byte) <= 8) {
-    expr val_refines = true;
-    for (unsigned off = 0; off < (bytes / bytes_per_byte); ++off) {
-      expr off_expr = expr::mkUInt(off, ptr_offset);
-      val_refines &= (ptr_offset == off_expr).implies(refined(off_expr));
+      src.blockSize().isUInt(bytes)) {
+    const uint64_t n = bytes / bytes_per_byte;
+    if (n <= 8) {
+      expr val_refines = true;
+      for (unsigned off = 0; off < n; ++off) {
+        expr off_expr = expr::mkUInt(off, ptr_offset);
+        val_refines &= (ptr_offset == off_expr).implies(refined(off_expr));
+      }
+      return val_refines;
     }
-    return val_refines;
-  } else {
-    expr cnstr = refined(ptr_offset);
-    if (!full_check)
-      return cnstr;
-    return src.getOffsetSizet().ult(src.blockSizeOffsetT()).implies(cnstr);
   }
+  expr cnstr = refined(ptr_offset);
+  if (!full_check)
+    return cnstr;
+  return src.getOffsetSizet().ult(src.blockSizeOffsetT()).implies(cnstr);
 }
 
 tuple<expr, Pointer, set<expr>>
